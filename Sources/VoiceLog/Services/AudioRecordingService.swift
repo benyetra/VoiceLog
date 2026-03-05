@@ -192,85 +192,37 @@ final class AudioRecordingService: ObservableObject {
         }
 
         let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
 
-        guard inputFormat.channelCount > 0 else {
+        guard recordingFormat.channelCount > 0, recordingFormat.sampleRate > 0 else {
             throw AudioRecordingError.noInputNode
         }
-
-        // Create output WAV file in 16kHz mono format (optimal for Whisper)
-        let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: targetSampleRate,
-            channels: targetChannels,
-            interleaved: false
-        )!
 
         let fileName = "recording_\(ISO8601DateFormatter().string(from: Date())).wav"
             .replacingOccurrences(of: ":", with: "-")
         let fileURL = Self.storageDirectory.appendingPathComponent(fileName)
 
+        // Write in the hardware's native format — Whisper uses ffmpeg internally
+        // to decode any audio format, so no need for risky manual conversion.
         let audioFile: AVAudioFile
         do {
             audioFile = try AVAudioFile(
                 forWriting: fileURL,
-                settings: outputFormat.settings,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
+                settings: recordingFormat.settings
             )
         } catch {
             throw AudioRecordingError.fileCreationFailed(underlying: error)
         }
 
-        // Install a tap on the input node to capture audio
-        // Use a converter if the input format differs from our target format
-        let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
-
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) {
+        // Install a tap on the input node and write buffers directly
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) {
             [weak self, weak audioFile] buffer, _ in
             guard let audioFile = audioFile else { return }
-
-            if let converter = converter {
-                // Convert to 16kHz mono
-                let frameCapacity = AVAudioFrameCount(
-                    Double(buffer.frameLength) * outputFormat.sampleRate / inputFormat.sampleRate
-                )
-                guard frameCapacity > 0,
-                      let convertedBuffer = AVAudioPCMBuffer(
-                          pcmFormat: outputFormat,
-                          frameCapacity: frameCapacity
-                      )
-                else { return }
-
-                var error: NSError?
-                var allConsumed = false
-                converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-                    if allConsumed {
-                        outStatus.pointee = .noDataNow
-                        return nil
-                    }
-                    allConsumed = true
-                    outStatus.pointee = .haveData
-                    return buffer
-                }
-
-                if error == nil, convertedBuffer.frameLength > 0 {
-                    do {
-                        try audioFile.write(from: convertedBuffer)
-                    } catch {
-                        Task { @MainActor [weak self] in
-                            self?.handleRecordingError(error)
-                        }
-                    }
-                }
-            } else {
-                // Formats match, write directly
-                do {
-                    try audioFile.write(from: buffer)
-                } catch {
-                    Task { @MainActor [weak self] in
-                        self?.handleRecordingError(error)
-                    }
+            do {
+                try audioFile.write(from: buffer)
+            } catch {
+                Task { @MainActor [weak self] in
+                    self?.handleRecordingError(error)
                 }
             }
         }

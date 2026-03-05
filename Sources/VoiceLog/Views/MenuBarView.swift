@@ -9,6 +9,8 @@ struct MenuBarView: View {
     @EnvironmentObject private var whisperService: WhisperService
     @EnvironmentObject private var notionService: NotionService
 
+    private let aiService = AIPostProcessingService()
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -381,8 +383,25 @@ struct MenuBarView: View {
             appState.mode = .processing
             appState.statusMessage = "Processing..."
 
-            // Step 2: Post-processing (summarization) would go here
-            // For now, mark as ready and show preview
+            // Step 2: AI post-processing (if enabled and transcript is substantial)
+            if settings.aiPostProcessingEnabled, transcript.split(separator: " ").count > 5 {
+                do {
+                    let result = try await aiService.processTranscript(
+                        transcript,
+                        useLocalLLM: settings.useLocalLLM
+                    )
+                    appState.currentMeeting?.summary = result.summary
+                    appState.currentMeeting?.actionItems = result.actionItems
+                    appState.currentMeeting?.keyDecisions = result.keyDecisions
+                    if appState.currentMeeting?.title.starts(with: "Meeting ") == true {
+                        appState.currentMeeting?.title = result.suggestedTitle
+                    }
+                } catch {
+                    // AI processing is optional — continue without it
+                    print("[VoiceLog] AI post-processing failed: \(error.localizedDescription)")
+                }
+            }
+
             appState.currentMeeting?.status = .ready
             appState.mode = .idle
             appState.statusMessage = "Ready"
