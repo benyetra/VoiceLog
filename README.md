@@ -64,12 +64,20 @@ Record → Transcribe → Summarize → Sync to Notion
 
 ## Getting Started
 
-### Build from Source
+### Build & Run
 
 ```bash
 git clone https://github.com/benyetra/VoiceLog.git
 cd VoiceLog
-swift build
+
+# Build the .app bundle
+./Scripts/build-app.sh
+
+# Launch (appears in menu bar)
+open build/VoiceLog.app
+
+# Or install to Applications
+cp -r build/VoiceLog.app /Applications/
 ```
 
 ### Run Tests

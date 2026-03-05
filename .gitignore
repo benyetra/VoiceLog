@@ -12,6 +12,9 @@ DerivedData/
 .swiftpm/
 Package.resolved
 
+# Build output
+build/
+
 # macOS
 .DS_Store
 *.swp
