@@ -295,7 +295,7 @@ struct MenuBarView: View {
     private var footerSection: some View {
         HStack {
             Button {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                openSettings()
             } label: {
                 Label("Settings", systemImage: "gear")
             }
@@ -400,6 +400,18 @@ struct MenuBarView: View {
         appState.mode = .idle
         appState.statusMessage = "Ready"
         appState.transcriptionProgress = 0
+    }
+
+    private func openSettings() {
+        // Bring the app to front so the settings window is visible
+        NSApp.activate(ignoringOtherApps: true)
+
+        // macOS 14+ uses showSettingsWindow:, macOS 13 uses showPreferencesWindow:
+        if #available(macOS 14.0, *) {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        } else {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
     }
 
     // MARK: - Helpers
