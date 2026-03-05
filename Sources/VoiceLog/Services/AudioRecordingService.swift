@@ -162,13 +162,41 @@ final class AudioRecordingService: ObservableObject {
 
     // MARK: - Recording Control
 
-    /// Starts recording audio from the specified device (or default input) to a 16kHz mono WAV file.
+    /// Checks microphone permission and requests it if needed.
+    /// - Returns: true if microphone access is granted.
+    static func requestMicrophonePermission() async -> Bool {
+        if #available(macOS 14.0, *) {
+            return await AVAudioApplication.requestRecordPermission()
+        } else {
+            return await withCheckedContinuation { continuation in
+                AVCaptureDevice.requestAccess(for: .audio) { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        }
+    }
+
+    /// Checks if microphone permission is currently granted.
+    static var hasMicrophonePermission: Bool {
+        if #available(macOS 14.0, *) {
+            return AVAudioApplication.shared.recordPermission == .granted
+        } else {
+            return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        }
+    }
+
+    /// Starts recording audio from the specified device (or default input).
     /// - Parameter deviceID: The CoreAudio device ID string. Pass nil for the default input device.
     /// - Returns: The URL of the file being recorded to.
     @discardableResult
     func startRecording(deviceID: String? = nil) throws -> URL {
         guard !isRecording else {
             return currentFileURL!
+        }
+
+        // Check microphone permission
+        guard Self.hasMicrophonePermission else {
+            throw AudioRecordingError.permissionDenied
         }
 
         let engine = AVAudioEngine()

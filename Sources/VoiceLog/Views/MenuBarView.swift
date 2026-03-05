@@ -322,14 +322,23 @@ struct MenuBarView: View {
     // MARK: - Actions
 
     private func startRecording() {
-        do {
-            let deviceID = settings.selectedAudioDeviceID
-            try recordingService.startRecording(deviceID: deviceID)
-            appState.mode = .recording
-            appState.statusMessage = "Recording"
-            appState.lastError = nil
-        } catch {
-            appState.lastError = error.localizedDescription
+        Task {
+            // Request microphone permission if not yet granted
+            let granted = await AudioRecordingService.requestMicrophonePermission()
+            guard granted else {
+                appState.lastError = "Microphone access denied. Grant permission in System Settings > Privacy & Security > Microphone."
+                return
+            }
+
+            do {
+                let deviceID = settings.selectedAudioDeviceID
+                try recordingService.startRecording(deviceID: deviceID)
+                appState.mode = .recording
+                appState.statusMessage = "Recording"
+                appState.lastError = nil
+            } catch {
+                appState.lastError = error.localizedDescription
+            }
         }
     }
 
@@ -342,6 +351,15 @@ struct MenuBarView: View {
 
         let audioURL = result.url
         let duration = result.duration
+
+        // Verify the audio file has meaningful content (not just a WAV header)
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
+        if fileSize < 1000 {
+            appState.lastError = "Recording appears empty (\(fileSize) bytes). Check that VoiceLog has microphone permission in System Settings > Privacy & Security > Microphone."
+            appState.mode = .idle
+            return
+        }
+
         appState.mode = .transcribing
         appState.statusMessage = "Transcribing..."
 
@@ -370,6 +388,14 @@ struct MenuBarView: View {
     }
 
     private func transcribeAndProcess(audioURL: URL) async {
+        // Bridge whisper progress to app state
+        let progressTask = Task { @MainActor in
+            for await progress in whisperService.$transcriptionProgress.values {
+                appState.transcriptionProgress = progress
+            }
+        }
+        defer { progressTask.cancel() }
+
         do {
             // Step 1: Transcribe
             let transcript = try await whisperService.transcribe(
