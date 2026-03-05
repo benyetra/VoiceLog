@@ -296,9 +296,9 @@ final class AudioRecordingService: ObservableObject {
         return fileURL
     }
 
-    /// Stops the current recording and returns the file URL of the completed recording.
+    /// Stops the current recording and returns the file URL and final duration.
     @discardableResult
-    func stopRecording() -> URL? {
+    func stopRecording() -> (url: URL, duration: TimeInterval)? {
         guard isRecording else { return nil }
 
         stopDurationTimer()
@@ -314,12 +314,15 @@ final class AudioRecordingService: ObservableObject {
         isPaused = false
 
         let url = currentFileURL
+        let finalDuration = currentDuration
+
         currentFileURL = nil
         recordingStartTime = nil
         accumulatedDuration = 0
         currentDuration = 0
 
-        return url
+        guard let url = url else { return nil }
+        return (url: url, duration: finalDuration)
     }
 
     /// Pauses the current recording. Audio data is not captured while paused.

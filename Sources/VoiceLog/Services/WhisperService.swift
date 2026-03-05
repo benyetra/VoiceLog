@@ -26,7 +26,7 @@ enum WhisperError: LocalizedError {
         case .audioFileMissing(let url):
             return "Audio file not found at: \(url.path)"
         case .ffmpegNotInstalled:
-            return "ffmpeg is not installed. Required for chunking long audio files."
+            return "ffmpeg is not installed. Whisper requires ffmpeg to process audio. Install via: brew install ffmpeg"
         case .chunkingFailed(let reason):
             return "Failed to split audio into chunks: \(reason)"
         case .downloadFailed(let reason):
@@ -272,6 +272,11 @@ final class WhisperService: ObservableObject {
             throw WhisperError.whisperNotInstalled
         }
 
+        // Whisper requires ffmpeg to decode audio files
+        guard isFFmpegInstalled() else {
+            throw WhisperError.ffmpegNotInstalled
+        }
+
         await MainActor.run { self.transcriptionProgress = 0.0 }
 
         // Get audio duration to determine if chunking is needed
@@ -352,10 +357,11 @@ final class WhisperService: ObservableObject {
             throw WhisperError.timeout
         }
 
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorText = String(data: errorData, encoding: .utf8) ?? ""
+
         guard process.terminationStatus == 0 else {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw WhisperError.transcriptionFailed(errorMessage)
+            throw WhisperError.transcriptionFailed(errorText.isEmpty ? "Unknown error" : errorText)
         }
 
         // Whisper outputs a .txt file alongside/in the output directory
@@ -363,16 +369,27 @@ final class WhisperService: ObservableObject {
         let txtURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(baseName + ".txt")
 
+        var transcript = ""
         if FileManager.default.fileExists(atPath: txtURL.path) {
-            let text = try String(contentsOf: txtURL, encoding: .utf8)
+            transcript = try String(contentsOf: txtURL, encoding: .utf8)
             try? FileManager.default.removeItem(at: txtURL)
-            return text
+        } else {
+            // Fallback: read stdout
+            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            transcript = String(data: outputData, encoding: .utf8) ?? ""
         }
 
-        // Fallback: read stdout
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let outputText = String(data: outputData, encoding: .utf8) ?? ""
-        return outputText
+        // Detect whisper errors that end up in the output (e.g. missing ffmpeg)
+        let errorPatterns = ["FileNotFoundError", "No such file or directory", "Skipping", "Error", "ModuleNotFoundError"]
+        if transcript.isEmpty || errorPatterns.contains(where: { transcript.contains($0) }) {
+            let detail = transcript.isEmpty ? errorText : transcript
+            if detail.contains("ffmpeg") || detail.contains("ff") {
+                throw WhisperError.ffmpegNotInstalled
+            }
+            throw WhisperError.transcriptionFailed(detail.isEmpty ? "No transcript produced" : detail)
+        }
+
+        return transcript
     }
 
     // MARK: - Chunked Transcription

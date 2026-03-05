@@ -332,13 +332,14 @@ struct MenuBarView: View {
     }
 
     private func stopRecording() {
-        guard let audioURL = recordingService.stopRecording() else {
+        guard let result = recordingService.stopRecording() else {
             appState.lastError = "No recording data available."
             appState.mode = .idle
             return
         }
 
-        let duration = recordingService.currentDuration
+        let audioURL = result.url
+        let duration = result.duration
         appState.mode = .transcribing
         appState.statusMessage = "Transcribing..."
 
