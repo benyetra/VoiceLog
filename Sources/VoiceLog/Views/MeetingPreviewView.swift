@@ -247,7 +247,7 @@ struct MeetingPreviewView: View {
 
         Task {
             do {
-                try await notionService.createMeetingPage(
+                _ = try await notionService.createMeetingPage(
                     meeting: updatedMeeting,
                     databaseId: databaseId
                 )

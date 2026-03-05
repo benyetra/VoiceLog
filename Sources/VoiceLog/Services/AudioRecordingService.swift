@@ -138,21 +138,21 @@ final class AudioRecordingService: ObservableObject {
                 mElement: kAudioObjectPropertyElementMain
             )
 
-            var name: CFString = "" as CFString
-            var nameSize = UInt32(MemoryLayout<CFString>.size)
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>>.size)
+            var unmanagedName: Unmanaged<CFString>?
             status = AudioObjectGetPropertyData(
                 deviceID,
                 &nameAddress,
                 0,
                 nil,
                 &nameSize,
-                &name
+                &unmanagedName
             )
 
-            if status == noErr {
+            if status == noErr, let cfName = unmanagedName?.takeUnretainedValue() {
                 devices.append(AudioInputDevice(
                     id: String(deviceID),
-                    name: name as String
+                    name: cfName as String
                 ))
             }
         }

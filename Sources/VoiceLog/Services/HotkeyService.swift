@@ -16,7 +16,7 @@ final class HotkeyService: ObservableObject {
     // MARK: - Default Key Combo
 
     /// Default hotkey: Control + Option + R
-    static let defaultKeyCombo: (keyCode: UInt32, modifiers: UInt32) = (
+    nonisolated static let defaultKeyCombo: (keyCode: UInt32, modifiers: UInt32) = (
         keyCode: UInt32(kVK_ANSI_R),
         modifiers: UInt32(controlKey | optionKey)
     )
@@ -60,7 +60,7 @@ final class HotkeyService: ObservableObject {
     ///   - keyCombo: A tuple of Carbon virtual key code and modifier flags.
     ///   - handler: Closure invoked on the main thread when the hotkey is pressed.
     func register(
-        keyCombo: (keyCode: UInt32, modifiers: UInt32) = defaultKeyCombo,
+        keyCombo: (keyCode: UInt32, modifiers: UInt32) = HotkeyService.defaultKeyCombo,
         handler: @escaping () -> Void
     ) {
         // Unregister any existing hotkey first
@@ -90,7 +90,7 @@ final class HotkeyService: ObservableObject {
         }
 
         // Register the hotkey itself
-        var hotkeyIDSpec = EventHotKeyID(
+        let hotkeyIDSpec = EventHotKeyID(
             signature: Self.hotkeySignature,
             id: Self.hotkeyID
         )
