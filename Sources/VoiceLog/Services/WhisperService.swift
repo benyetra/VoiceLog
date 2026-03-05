@@ -57,26 +57,31 @@ final class WhisperService: ObservableObject {
     /// Timeout per chunk in seconds.
     private let timeoutPerChunk: TimeInterval = 1800 // 30 minutes
 
+    /// Cached user shell environment (lazy-loaded once)
+    private lazy var userShellEnvironment: [String: String] = {
+        loadUserShellEnvironment()
+    }()
+
     // MARK: - Whisper Installation Check
 
     /// Checks if the whisper CLI is available at the configured path or in common locations.
     func isWhisperInstalled() -> Bool {
-        let paths = [
-            whisperExecutablePath,
-            "/usr/local/bin/whisper",
-            "/opt/homebrew/bin/whisper",
-            "/usr/bin/whisper",
-        ]
+        // Check explicitly configured path first
+        if FileManager.default.isExecutableFile(atPath: whisperExecutablePath) {
+            return true
+        }
 
-        for path in paths {
+        // Check common install locations including pyenv, Homebrew, and pip paths
+        let candidatePaths = commonExecutablePaths(for: "whisper")
+        for path in candidatePaths {
             if FileManager.default.isExecutableFile(atPath: path) {
                 whisperExecutablePath = path
                 return true
             }
         }
 
-        // Try `which whisper` as a fallback
-        if let resolvedPath = resolveExecutable("whisper") {
+        // Last resort: resolve via the user's login shell to pick up pyenv, PATH, etc.
+        if let resolvedPath = resolveViaShell("whisper") {
             whisperExecutablePath = resolvedPath
             return true
         }
@@ -89,18 +94,51 @@ final class WhisperService: ObservableObject {
         if FileManager.default.isExecutableFile(atPath: ffmpegExecutablePath) {
             return true
         }
-        if let resolved = resolveExecutable("ffmpeg") {
+        let candidates = commonExecutablePaths(for: "ffmpeg")
+        for path in candidates {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                ffmpegExecutablePath = path
+                return true
+            }
+        }
+        if let resolved = resolveViaShell("ffmpeg") {
             ffmpegExecutablePath = resolved
             return true
         }
         return false
     }
 
-    /// Resolves an executable name to its full path via `which`.
-    private func resolveExecutable(_ name: String) -> String? {
+    /// Returns common paths where a CLI tool might be installed (Homebrew, pyenv, pip, etc.)
+    private func commonExecutablePaths(for name: String) -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var paths = [
+            "/usr/local/bin/\(name)",
+            "/opt/homebrew/bin/\(name)",
+            "/usr/bin/\(name)",
+            "\(home)/.pyenv/shims/\(name)",
+            "\(home)/.local/bin/\(name)",
+        ]
+
+        // Check all pyenv Python version bin dirs
+        let pyenvVersionsDir = "\(home)/.pyenv/versions"
+        if let versions = try? FileManager.default.contentsOfDirectory(atPath: pyenvVersionsDir) {
+            for version in versions {
+                paths.append("\(pyenvVersionsDir)/\(version)/bin/\(name)")
+            }
+        }
+
+        return paths
+    }
+
+    /// Resolves an executable by running `which` inside the user's login shell.
+    /// This picks up PATH modifications from .zshrc/.bashrc (pyenv, nvm, etc.)
+    private func resolveViaShell(_ name: String) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = [name]
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        process.executableURL = URL(fileURLWithPath: shell)
+        // -l = login shell (loads profile), -c = run command
+        process.arguments = ["-l", "-c", "which \(name)"]
+
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -111,13 +149,53 @@ final class WhisperService: ObservableObject {
             if process.terminationStatus == 0 {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let path = path, !path.isEmpty {
+                if let path = path, !path.isEmpty, path != name {
                     return path
                 }
             }
         } catch {}
 
         return nil
+    }
+
+    /// Loads environment variables from the user's login shell so subprocess
+    /// invocations pick up pyenv, Homebrew, and other PATH additions.
+    private func loadUserShellEnvironment() -> [String: String] {
+        let process = Process()
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-l", "-c", "env"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return ProcessInfo.processInfo.environment
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else {
+            return ProcessInfo.processInfo.environment
+        }
+
+        var env: [String: String] = [:]
+        for line in output.components(separatedBy: "\n") {
+            guard let equalsIndex = line.firstIndex(of: "=") else { continue }
+            let key = String(line[line.startIndex..<equalsIndex])
+            let value = String(line[line.index(after: equalsIndex)...])
+            env[key] = value
+        }
+
+        return env.isEmpty ? ProcessInfo.processInfo.environment : env
+    }
+
+    /// Configures a Process to run with the user's full shell environment.
+    private func configureProcess(_ process: Process) {
+        process.environment = userShellEnvironment
     }
 
     // MARK: - Model Management
@@ -143,9 +221,10 @@ final class WhisperService: ObservableObject {
         print("MODEL_DOWNLOADED")
         """
 
-        let pythonPath = resolveExecutable("python3") ?? "/usr/bin/python3"
+        let pythonPath = resolveViaShell("python3") ?? "/usr/bin/python3"
         process.executableURL = URL(fileURLWithPath: pythonPath)
         process.arguments = ["-c", script]
+        configureProcess(process)
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -227,6 +306,7 @@ final class WhisperService: ObservableObject {
     ) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: whisperExecutablePath)
+        configureProcess(process)
 
         var arguments = [
             audioURL.path,
@@ -347,6 +427,7 @@ final class WhisperService: ObservableObject {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffmpegExecutablePath)
+        configureProcess(process)
         process.arguments = [
             "-i", audioURL.path,
             "-f", "segment",
@@ -400,7 +481,7 @@ final class WhisperService: ObservableObject {
     /// Gets the duration of an audio file using ffprobe (part of ffmpeg).
     private func getAudioDuration(url: URL) async throws -> TimeInterval {
         let ffprobePath: String
-        if let resolved = resolveExecutable("ffprobe") {
+        if let resolved = resolveViaShell("ffprobe") {
             ffprobePath = resolved
         } else {
             // Estimate based on file size for WAV: 16kHz * 1ch * 4 bytes = 64KB/s
@@ -411,6 +492,7 @@ final class WhisperService: ObservableObject {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffprobePath)
+        configureProcess(process)
         process.arguments = [
             "-v", "error",
             "-show_entries", "format=duration",
