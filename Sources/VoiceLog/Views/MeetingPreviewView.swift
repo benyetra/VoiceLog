@@ -253,6 +253,14 @@ struct MeetingPreviewView: View {
                 )
                 appState.currentMeeting?.notionSyncStatus = .synced
                 appState.currentMeeting?.status = .synced
+
+                // Persist sync status to local database
+                if var meeting = appState.currentMeeting {
+                    meeting.title = editableTitle
+                    try? DatabaseService.shared.saveMeeting(&meeting)
+                    appState.currentMeeting = meeting
+                }
+
                 appState.showMeetingPreview = false
                 appState.mode = .idle
                 appState.statusMessage = "Ready"
@@ -266,12 +274,18 @@ struct MeetingPreviewView: View {
     }
 
     private func saveLocally() {
-        // Update title
         appState.currentMeeting?.title = editableTitle
         appState.currentMeeting?.status = .ready
-        savedLocally = true
 
-        // Persist to local database would happen here via DatabaseService
+        if var meeting = appState.currentMeeting {
+            do {
+                try DatabaseService.shared.saveMeeting(&meeting)
+                appState.currentMeeting = meeting
+                savedLocally = true
+            } catch {
+                syncError = "Failed to save locally: \(error.localizedDescription)"
+            }
+        }
     }
 
     // MARK: - Helpers

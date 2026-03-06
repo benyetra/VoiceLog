@@ -59,13 +59,10 @@ final class AudioRecordingService: ObservableObject {
 
     // MARK: - Storage Directory
 
+    /// Returns the recordings directory, respecting the user's configured local storage path.
     private static var storageDirectory: URL {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        let dir = appSupport
-            .appendingPathComponent("VoiceLog", isDirectory: true)
+        let basePath = AppSettings.shared.localStoragePath
+        let dir = URL(fileURLWithPath: basePath, isDirectory: true)
             .appendingPathComponent("Recordings", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir

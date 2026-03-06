@@ -14,8 +14,7 @@ final class DatabaseService {
     private init() {
         do {
             let fileManager = FileManager.default
-            let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            let directoryURL = appSupportURL.appendingPathComponent("VoiceLog", isDirectory: true)
+            let directoryURL = URL(fileURLWithPath: AppSettings.shared.localStoragePath, isDirectory: true)
 
             // Create directory if it does not exist
             if !fileManager.fileExists(atPath: directoryURL.path) {

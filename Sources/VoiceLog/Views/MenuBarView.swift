@@ -440,6 +440,19 @@ struct MenuBarView: View {
             appState.statusMessage = "Ready"
             appState.showMeetingPreview = true
 
+            // Persist to local database and save transcript file
+            if var meeting = appState.currentMeeting {
+                do {
+                    try DatabaseService.shared.saveMeeting(&meeting)
+                    appState.currentMeeting = meeting
+                } catch {
+                    print("[VoiceLog] Failed to save meeting locally: \(error.localizedDescription)")
+                }
+
+                // Write transcript as a readable text file
+                saveTranscriptFile(meeting: meeting)
+            }
+
         } catch {
             appState.lastError = "Transcription failed: \(error.localizedDescription)"
             appState.currentMeeting?.status = .failed
@@ -464,6 +477,52 @@ struct MenuBarView: View {
             NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         } else {
             NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
+    }
+
+    /// Saves the transcript (and summary if available) as a text file
+    /// in the user's configured local storage path.
+    private func saveTranscriptFile(meeting: MeetingRecord) {
+        let storagePath = settings.localStoragePath
+        let transcriptsDir = URL(fileURLWithPath: storagePath, isDirectory: true)
+            .appendingPathComponent("Transcripts", isDirectory: true)
+        try? FileManager.default.createDirectory(at: transcriptsDir, withIntermediateDirectories: true)
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm"
+        let datePart = dateFormatter.string(from: meeting.date)
+        let safeTitle = meeting.title
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let fileName = "\(datePart)_\(safeTitle).txt"
+        let fileURL = transcriptsDir.appendingPathComponent(fileName)
+
+        var content = "# \(meeting.title)\n"
+        content += "Date: \(meeting.date.formatted())\n"
+        content += "Duration: \(Int(meeting.duration / 60))m \(Int(meeting.duration) % 60)s\n\n"
+
+        if let summary = meeting.summary {
+            content += "## Summary\n\(summary)\n\n"
+        }
+        if let items = meeting.actionItems, !items.isEmpty {
+            content += "## Action Items\n"
+            for item in items { content += "- \(item)\n" }
+            content += "\n"
+        }
+        if let decisions = meeting.keyDecisions, !decisions.isEmpty {
+            content += "## Key Decisions\n"
+            for d in decisions { content += "- \(d)\n" }
+            content += "\n"
+        }
+        if let transcript = meeting.transcript {
+            content += "## Transcript\n\(transcript)\n"
+        }
+
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            print("[VoiceLog] Transcript saved to \(fileURL.path)")
+        } catch {
+            print("[VoiceLog] Failed to save transcript file: \(error.localizedDescription)")
         }
     }
 
