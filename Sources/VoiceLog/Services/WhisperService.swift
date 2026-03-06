@@ -294,7 +294,8 @@ final class WhisperService: ObservableObject {
             transcript = try await transcribeSingleFile(
                 audioURL: audioURL,
                 model: model,
-                language: language
+                language: language,
+                estimatedDuration: duration
             )
             await MainActor.run { self.transcriptionProgress = 1.0 }
         }
@@ -307,7 +308,8 @@ final class WhisperService: ObservableObject {
     private func transcribeSingleFile(
         audioURL: URL,
         model: WhisperModelSize,
-        language: String?
+        language: String?,
+        estimatedDuration: TimeInterval = 60
     ) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: whisperExecutablePath)
@@ -331,9 +333,44 @@ final class WhisperService: ObservableObject {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
+        // Real-time stderr monitoring for progress updates.
+        // Whisper outputs timestamp lines like "[00:00.000 --> 00:30.000]  text"
+        // to stderr. We parse the end timestamp to estimate progress.
+        let stderrAccumulator = StderrAccumulator()
+        let audioDuration = max(estimatedDuration, 1.0)
+
+        errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            stderrAccumulator.append(data)
+
+            if let text = String(data: data, encoding: .utf8) {
+                // Parse end timestamps: --> MM:SS.mmm
+                let pattern = #"-->\s*(\d{2}):(\d{2})\.\d{3}"#
+                if let regex = try? NSRegularExpression(pattern: pattern),
+                   let match = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
+                   let minutesRange = Range(match.range(at: 1), in: text),
+                   let secondsRange = Range(match.range(at: 2), in: text) {
+                    let minutes = Double(text[minutesRange]) ?? 0
+                    let seconds = Double(text[secondsRange]) ?? 0
+                    let endTime = minutes * 60 + seconds
+                    let progress = min(endTime / audioDuration, 0.95)
+                    Task { @MainActor [weak self] in
+                        if let self = self {
+                            self.transcriptionProgress = max(self.transcriptionProgress, progress)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Signal that transcription has started
+        await MainActor.run { self.transcriptionProgress = 0.02 }
+
         do {
             try process.run()
         } catch {
+            errorPipe.fileHandleForReading.readabilityHandler = nil
             throw WhisperError.transcriptionFailed(error.localizedDescription)
         }
 
@@ -353,12 +390,14 @@ final class WhisperService: ObservableObject {
             }
         }
 
+        // Stop reading stderr
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+
         guard didComplete else {
             throw WhisperError.timeout
         }
 
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorText = String(data: errorData, encoding: .utf8) ?? ""
+        let errorText = stderrAccumulator.text
 
         guard process.terminationStatus == 0 else {
             throw WhisperError.transcriptionFailed(errorText.isEmpty ? "Unknown error" : errorText)
@@ -491,6 +530,26 @@ final class WhisperService: ObservableObject {
         }
 
         return chunkURLs
+    }
+
+    // MARK: - Stderr Accumulator
+
+    /// Thread-safe accumulator for stderr data from subprocess output.
+    private class StderrAccumulator: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+
+        func append(_ newData: Data) {
+            lock.lock()
+            data.append(newData)
+            lock.unlock()
+        }
+
+        var text: String {
+            lock.lock()
+            defer { lock.unlock() }
+            return String(data: data, encoding: .utf8) ?? ""
+        }
     }
 
     // MARK: - Audio Duration

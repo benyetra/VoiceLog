@@ -176,12 +176,19 @@ struct MenuBarView: View {
             Text("Transcribing audio...")
                 .font(.headline)
 
-            ProgressView(value: appState.transcriptionProgress, total: 1.0)
-                .progressViewStyle(.linear)
-
-            Text("\(Int(appState.transcriptionProgress * 100))%")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if appState.transcriptionProgress > 0.01 {
+                ProgressView(value: appState.transcriptionProgress, total: 1.0)
+                    .progressViewStyle(.linear)
+                Text("\(Int(appState.transcriptionProgress * 100))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading model...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Button("Cancel") {
                 cancelTranscription()

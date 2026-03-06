@@ -51,16 +51,11 @@ final class AudioRecordingService: ObservableObject {
 
     // MARK: - Private Properties
 
-    private var audioEngine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
+    private var audioRecorder: AVAudioRecorder?
     private var currentFileURL: URL?
     private var durationTimer: Timer?
     private var recordingStartTime: Date?
     private var accumulatedDuration: TimeInterval = 0
-
-    /// Target sample rate for Whisper-optimized recording.
-    private let targetSampleRate: Double = 16_000
-    private let targetChannels: AVAudioChannelCount = 1
 
     // MARK: - Storage Directory
 
@@ -199,72 +194,46 @@ final class AudioRecordingService: ObservableObject {
             throw AudioRecordingError.permissionDenied
         }
 
-        let engine = AVAudioEngine()
-
-        // Set specific input device if requested
+        // If a specific device is requested, set it on the audio engine's input node
+        // so AVAudioRecorder picks it up as the active device.
         if let deviceID = deviceID, let audioDeviceID = AudioDeviceID(deviceID) {
-            let inputNode = engine.inputNode
-            let audioUnit = inputNode.audioUnit!
-            var deviceIDValue = audioDeviceID
-            let status = AudioUnitSetProperty(
-                audioUnit,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &deviceIDValue,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
-            if status != noErr {
-                throw AudioRecordingError.deviceNotFound(deviceID)
-            }
-        }
-
-        let inputNode = engine.inputNode
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-
-        guard recordingFormat.channelCount > 0, recordingFormat.sampleRate > 0 else {
-            throw AudioRecordingError.noInputNode
+            setInputDevice(audioDeviceID)
         }
 
         let fileName = "recording_\(ISO8601DateFormatter().string(from: Date())).wav"
             .replacingOccurrences(of: ":", with: "-")
         let fileURL = Self.storageDirectory.appendingPathComponent(fileName)
 
-        // Write in the hardware's native format — Whisper uses ffmpeg internally
-        // to decode any audio format, so no need for risky manual conversion.
-        let audioFile: AVAudioFile
+        // Record 16 kHz mono 16-bit PCM — optimal for Whisper, no conversion needed
+        let settings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatLinearPCM),
+            AVSampleRateKey: 16_000.0,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+
+        let recorder: AVAudioRecorder
         do {
-            audioFile = try AVAudioFile(
-                forWriting: fileURL,
-                settings: recordingFormat.settings
-            )
+            recorder = try AVAudioRecorder(url: fileURL, settings: settings)
         } catch {
             throw AudioRecordingError.fileCreationFailed(underlying: error)
         }
 
-        // Install a tap on the input node and write buffers directly
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) {
-            [weak self, weak audioFile] buffer, _ in
-            guard let audioFile = audioFile else { return }
-            do {
-                try audioFile.write(from: buffer)
-            } catch {
-                Task { @MainActor [weak self] in
-                    self?.handleRecordingError(error)
-                }
-            }
+        recorder.prepareToRecord()
+
+        guard recorder.record() else {
+            throw AudioRecordingError.engineStartFailed(
+                underlying: NSError(
+                    domain: "VoiceLog",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "AVAudioRecorder.record() returned false"]
+                )
+            )
         }
 
-        do {
-            engine.prepare()
-            try engine.start()
-        } catch {
-            inputNode.removeTap(onBus: 0)
-            throw AudioRecordingError.engineStartFailed(underlying: error)
-        }
-
-        self.audioEngine = engine
-        self.audioFile = audioFile
+        self.audioRecorder = recorder
         self.currentFileURL = fileURL
         self.isRecording = true
         self.isPaused = false
@@ -283,12 +252,8 @@ final class AudioRecordingService: ObservableObject {
 
         stopDurationTimer()
 
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
-
-        // Close the audio file by releasing the reference
-        audioFile = nil
+        audioRecorder?.stop()
+        audioRecorder = nil
 
         isRecording = false
         isPaused = false
@@ -309,7 +274,7 @@ final class AudioRecordingService: ObservableObject {
     func pauseRecording() {
         guard isRecording, !isPaused else { return }
 
-        audioEngine?.pause()
+        audioRecorder?.pause()
         isPaused = true
 
         // Accumulate duration up to this pause
@@ -324,13 +289,34 @@ final class AudioRecordingService: ObservableObject {
     func resumeRecording() {
         guard isRecording, isPaused else { return }
 
-        do {
-            try audioEngine?.start()
-            isPaused = false
-            recordingStartTime = Date()
-            startDurationTimer()
-        } catch {
-            handleRecordingError(error)
+        audioRecorder?.record()
+        isPaused = false
+        recordingStartTime = Date()
+        startDurationTimer()
+    }
+
+    // MARK: - Device Selection
+
+    /// Sets the input device for recording using CoreAudio.
+    /// AVAudioRecorder on macOS records from the system default input device.
+    /// This sets the requested device as the default input device.
+    private func setInputDevice(_ deviceID: AudioDeviceID) {
+        var deviceIDValue = deviceID
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size),
+            &deviceIDValue
+        )
+        if status != noErr {
+            print("[AudioRecordingService] Warning: could not set input device \(deviceID), using system default")
         }
     }
 
@@ -353,14 +339,6 @@ final class AudioRecordingService: ObservableObject {
     private func updateDuration() {
         guard isRecording, !isPaused, let startTime = recordingStartTime else { return }
         currentDuration = accumulatedDuration + Date().timeIntervalSince(startTime)
-    }
-
-    // MARK: - Error Handling
-
-    private func handleRecordingError(_ error: Error) {
-        // Save partial audio by stopping gracefully
-        print("[AudioRecordingService] Recording error: \(error.localizedDescription)")
-        _ = stopRecording()
     }
 
     deinit {
