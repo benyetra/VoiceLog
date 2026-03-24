@@ -90,7 +90,7 @@ final class WhisperService: ObservableObject {
     }
 
     /// Checks if ffmpeg is available.
-    private func isFFmpegInstalled() -> Bool {
+    func isFFmpegInstalled() -> Bool {
         if FileManager.default.isExecutableFile(atPath: ffmpegExecutablePath) {
             return true
         }
@@ -554,6 +554,54 @@ final class WhisperService: ObservableObject {
 
     // MARK: - Audio Duration
 
+    // MARK: - Audio Mixing
+
+    /// Mixes microphone and system audio files into a single file using ffmpeg.
+    /// Both inputs are mixed down to 16 kHz mono 16-bit PCM WAV for Whisper.
+    func mixAudioFiles(micURL: URL, systemAudioURL: URL, outputURL: URL) async throws {
+        guard isFFmpegInstalled() else {
+            throw WhisperError.ffmpegNotInstalled
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffmpegExecutablePath)
+        configureProcess(process)
+        process.arguments = [
+            "-y",
+            "-i", micURL.path,
+            "-i", systemAudioURL.path,
+            "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0",
+            "-ar", "16000",
+            "-ac", "1",
+            "-acodec", "pcm_s16le",
+            outputURL.path,
+        ]
+
+        let errorPipe = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+        } catch {
+            throw WhisperError.transcriptionFailed("Failed to start ffmpeg for audio mixing: \(error.localizedDescription)")
+        }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
+        }
+
+        guard process.terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw WhisperError.transcriptionFailed("Audio mixing failed: \(errorMessage)")
+        }
+    }
+
+    // MARK: - Audio Duration
+
     /// Gets the duration of an audio file using ffprobe (part of ffmpeg).
     private func getAudioDuration(url: URL) async throws -> TimeInterval {
         let ffprobePath: String
@@ -563,7 +611,7 @@ final class WhisperService: ObservableObject {
             // Estimate based on file size for WAV: 16kHz * 1ch * 4 bytes = 64KB/s
             let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
             let fileSize = attrs?[.size] as? Double ?? 0
-            return fileSize / (16_000 * 4) // approximate for 16kHz float32 mono WAV
+            return fileSize / (16_000 * 2) // approximate for 16kHz 16-bit mono WAV
         }
 
         let process = Process()

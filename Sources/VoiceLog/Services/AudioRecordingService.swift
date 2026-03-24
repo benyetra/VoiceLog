@@ -48,6 +48,8 @@ final class AudioRecordingService: ObservableObject {
     @Published private(set) var isRecording: Bool = false
     @Published private(set) var isPaused: Bool = false
     @Published private(set) var currentDuration: TimeInterval = 0
+    /// Current audio input level in dB (-160 = silence, 0 = maximum).
+    @Published private(set) var currentAudioLevel: Float = -160
 
     // MARK: - Private Properties
 
@@ -218,6 +220,7 @@ final class AudioRecordingService: ObservableObject {
             throw AudioRecordingError.fileCreationFailed(underlying: error)
         }
 
+        recorder.isMeteringEnabled = true
         recorder.prepareToRecord()
 
         guard recorder.record() else {
@@ -336,6 +339,10 @@ final class AudioRecordingService: ObservableObject {
     private func updateDuration() {
         guard isRecording, !isPaused, let startTime = recordingStartTime else { return }
         currentDuration = accumulatedDuration + Date().timeIntervalSince(startTime)
+
+        // Update audio level metering
+        audioRecorder?.updateMeters()
+        currentAudioLevel = audioRecorder?.averagePower(forChannel: 0) ?? -160
     }
 
     deinit {

@@ -70,6 +70,8 @@ cat > "${CONTENTS_DIR}/Info.plist" << PLIST
     <string>VoiceLog needs microphone access to record meetings for transcription.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>VoiceLog needs automation access to register global hotkeys.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>VoiceLog uses screen recording permission to capture system audio from meeting apps (Zoom, Teams, Meet) for transcription.</string>
 </dict>
 </plist>
 PLIST

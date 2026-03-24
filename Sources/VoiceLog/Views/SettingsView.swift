@@ -118,6 +118,7 @@ private struct AudioSettingsTab: View {
     @ObservedObject var settings: AppSettings
     @State private var availableDevices: [AudioInputDevice] = []
     @State private var isTestingRecording: Bool = false
+    @State private var hasScreenCapturePermission: Bool = false
 
     var body: some View {
         Form {
@@ -137,7 +138,36 @@ private struct AudioSettingsTab: View {
                 }
                 .controlSize(.small)
             } header: {
-                Text("Audio Input")
+                Text("Microphone Input")
+            }
+
+            Section {
+                Toggle("Capture system audio", isOn: $settings.captureSystemAudio)
+
+                if settings.captureSystemAudio {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Image(systemName: hasScreenCapturePermission
+                                  ? "checkmark.circle.fill" : "xmark.circle")
+                                .foregroundStyle(hasScreenCapturePermission ? .green : .red)
+                            Text(hasScreenCapturePermission
+                                 ? "Screen recording permission granted"
+                                 : "Screen recording permission required")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Text("System audio capture uses ScreenCaptureKit to record other meeting participants' voices from apps like Zoom, Teams, and Google Meet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("System Audio (Meeting Participants)")
+            } footer: {
+                Text("When enabled, VoiceLog captures both your microphone and your computer's audio output, then mixes them for transcription.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -166,6 +196,7 @@ private struct AudioSettingsTab: View {
         .padding()
         .onAppear {
             refreshDevices()
+            checkScreenCapturePermission()
         }
     }
 
@@ -173,9 +204,14 @@ private struct AudioSettingsTab: View {
         availableDevices = AudioRecordingService.listInputDevices()
     }
 
+    private func checkScreenCapturePermission() {
+        Task {
+            hasScreenCapturePermission = await SystemAudioCaptureService.requestPermission()
+        }
+    }
+
     private func toggleTestRecording() {
         isTestingRecording.toggle()
-        // Actual test recording logic would be wired here
         if isTestingRecording {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 isTestingRecording = false

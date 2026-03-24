@@ -6,6 +6,7 @@ struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var recordingService: AudioRecordingService
+    @EnvironmentObject private var systemAudioService: SystemAudioCaptureService
     @EnvironmentObject private var whisperService: WhisperService
     @EnvironmentObject private var notionService: NotionService
 
@@ -230,22 +231,39 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Waveform Placeholder
+    // MARK: - Audio Level Indicator
 
     private var waveformPlaceholder: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<20, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(.red.opacity(recordingService.isPaused ? 0.3 : 0.7))
-                    .frame(width: 4, height: waveformBarHeight(index: index))
-                    .animation(
-                        recordingService.isPaused
-                            ? .none
-                            : .easeInOut(duration: 0.4)
-                                .repeatForever(autoreverses: true)
-                                .delay(Double(index) * 0.05),
-                        value: recordingService.isPaused
-                    )
+        VStack(spacing: 4) {
+            // Real audio level meter
+            HStack(spacing: 3) {
+                ForEach(0..<20, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(barColor(index: index))
+                        .frame(width: 4, height: waveformBarHeight(index: index))
+                        .animation(.easeOut(duration: 0.1), value: recordingService.currentAudioLevel)
+                }
+            }
+
+            // Level text and system audio indicator
+            HStack(spacing: 8) {
+                if normalizedAudioLevel < 0.05 && !recordingService.isPaused {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                    Text("No audio detected")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                }
+                if systemAudioService.isCapturing {
+                    Spacer()
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                    Text("System audio")
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                }
             }
         }
     }
@@ -340,6 +358,23 @@ struct MenuBarView: View {
             do {
                 let deviceID = settings.selectedAudioDeviceID
                 try recordingService.startRecording(deviceID: deviceID)
+
+                // Start system audio capture if enabled
+                if settings.captureSystemAudio {
+                    let hasPermission = await SystemAudioCaptureService.requestPermission()
+                    if hasPermission {
+                        let systemAudioURL = systemAudioFileURL()
+                        do {
+                            try await systemAudioService.startCapture(to: systemAudioURL)
+                        } catch {
+                            // System audio is optional — continue with mic-only recording
+                            print("[VoiceLog] System audio capture failed: \(error.localizedDescription)")
+                        }
+                    } else {
+                        print("[VoiceLog] Screen recording permission not granted — recording mic only")
+                    }
+                }
+
                 appState.mode = .recording
                 appState.statusMessage = "Recording"
                 appState.lastError = nil
@@ -349,6 +384,17 @@ struct MenuBarView: View {
         }
     }
 
+    /// Returns a file URL for the system audio recording alongside the mic recording.
+    private func systemAudioFileURL() -> URL {
+        let basePath = settings.localStoragePath
+        let dir = URL(fileURLWithPath: basePath, isDirectory: true)
+            .appendingPathComponent("Recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fileName = "system_audio_\(ISO8601DateFormatter().string(from: Date())).wav"
+            .replacingOccurrences(of: ":", with: "-")
+        return dir.appendingPathComponent(fileName)
+    }
+
     private func stopRecording() {
         guard let result = recordingService.stopRecording() else {
             appState.lastError = "No recording data available."
@@ -356,11 +402,11 @@ struct MenuBarView: View {
             return
         }
 
-        let audioURL = result.url
+        let micURL = result.url
         let duration = result.duration
 
-        // Verify the audio file has meaningful content (not just a WAV header)
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
+        // Verify the mic audio file has meaningful content (not just a WAV header)
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: micURL.path)[.size] as? Int) ?? 0
         if fileSize < 1000 {
             appState.lastError = "Recording appears empty (\(fileSize) bytes). Check that VoiceLog has microphone permission in System Settings > Privacy & Security > Microphone."
             appState.mode = .idle
@@ -368,7 +414,7 @@ struct MenuBarView: View {
         }
 
         appState.mode = .transcribing
-        appState.statusMessage = "Transcribing..."
+        appState.statusMessage = "Preparing audio..."
 
         // Create the meeting record
         var meeting = MeetingRecord(
@@ -376,13 +422,48 @@ struct MenuBarView: View {
             date: Date(),
             duration: duration
         )
-        meeting.audioFilePath = audioURL.path
+        meeting.audioFilePath = micURL.path
         meeting.status = .transcribing
         appState.currentMeeting = meeting
 
-        // Begin transcription
+        // Stop system audio capture and mix before transcription
         Task {
+            let audioURL = await prepareAudioForTranscription(micURL: micURL)
             await transcribeAndProcess(audioURL: audioURL)
+        }
+    }
+
+    /// Stops system audio capture if running, mixes with mic audio, and returns the final audio URL.
+    private func prepareAudioForTranscription(micURL: URL) async -> URL {
+        // Stop system audio capture
+        guard let systemAudioURL = await systemAudioService.stopCapture() else {
+            // No system audio — use mic recording directly
+            return micURL
+        }
+
+        // Mix mic + system audio into a single file
+        let mixedURL = micURL.deletingLastPathComponent()
+            .appendingPathComponent("mixed_\(micURL.lastPathComponent)")
+
+        do {
+            try await whisperService.mixAudioFiles(
+                micURL: micURL,
+                systemAudioURL: systemAudioURL,
+                outputURL: mixedURL
+            )
+
+            // Clean up the separate system audio file
+            try? FileManager.default.removeItem(at: systemAudioURL)
+
+            // Update the meeting record to point to the mixed file
+            appState.currentMeeting?.audioFilePath = mixedURL.path
+
+            return mixedURL
+        } catch {
+            print("[VoiceLog] Audio mixing failed, using mic-only: \(error.localizedDescription)")
+            // Clean up system audio file on failure too
+            try? FileManager.default.removeItem(at: systemAudioURL)
+            return micURL
         }
     }
 
@@ -538,13 +619,34 @@ struct MenuBarView: View {
         return String(format: "%d:%02d", minutes, seconds)
     }
 
+    /// Normalized audio level from 0 (silence) to 1 (loud).
+    private var normalizedAudioLevel: CGFloat {
+        // Map dB range -50..0 to 0..1
+        let level = CGFloat(recordingService.currentAudioLevel)
+        return max(0, min(1, (level + 50) / 50))
+    }
+
     private func waveformBarHeight(index: Int) -> CGFloat {
         if recordingService.isPaused {
             return 6
         }
-        // Simulated varying heights for visual effect
-        let heights: [CGFloat] = [12, 20, 8, 28, 16, 32, 10, 24, 18, 36,
-                                   14, 30, 8, 22, 26, 34, 12, 20, 16, 28]
-        return heights[index % heights.count]
+        // Base height varies per bar position for visual texture
+        let baseHeights: [CGFloat] = [0.3, 0.5, 0.2, 0.7, 0.4, 0.8, 0.25, 0.6, 0.45, 0.9,
+                                       0.35, 0.75, 0.2, 0.55, 0.65, 0.85, 0.3, 0.5, 0.4, 0.7]
+        let base = baseHeights[index % baseHeights.count]
+        let level = normalizedAudioLevel
+        // Scale bars by actual audio level: minimum 4pt, maximum 36pt
+        return max(4, base * level * 36)
+    }
+
+    private func barColor(index: Int) -> Color {
+        if recordingService.isPaused {
+            return .red.opacity(0.3)
+        }
+        let level = normalizedAudioLevel
+        if level < 0.05 {
+            return .gray.opacity(0.4) // No audio detected
+        }
+        return .red.opacity(0.5 + level * 0.5)
     }
 }

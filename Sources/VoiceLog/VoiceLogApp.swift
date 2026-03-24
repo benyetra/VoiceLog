@@ -5,6 +5,7 @@ struct VoiceLogApp: App {
     @StateObject private var appState = AppState()
     @StateObject private var settings = AppSettings.shared
     @StateObject private var recordingService = AudioRecordingService()
+    @StateObject private var systemAudioService = SystemAudioCaptureService()
     @StateObject private var whisperService = WhisperService()
     @StateObject private var notionService = NotionService()
     @StateObject private var hotkeyService = HotkeyService()
@@ -15,6 +16,7 @@ struct VoiceLogApp: App {
                 .environmentObject(appState)
                 .environmentObject(settings)
                 .environmentObject(recordingService)
+                .environmentObject(systemAudioService)
                 .environmentObject(whisperService)
                 .environmentObject(notionService)
         } label: {

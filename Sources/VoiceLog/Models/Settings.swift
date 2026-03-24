@@ -57,6 +57,12 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(whisperLanguage, forKey: "whisperLanguage") }
     }
 
+    /// When enabled, VoiceLog captures system audio (other meeting participants) via ScreenCaptureKit
+    /// and mixes it with the microphone recording before transcription.
+    @Published var captureSystemAudio: Bool {
+        didSet { UserDefaults.standard.set(captureSystemAudio, forKey: "captureSystemAudio") }
+    }
+
     private init() {
         let defaults = UserDefaults.standard
         self.whisperModelSize = WhisperModelSize(rawValue: defaults.string(forKey: "whisperModelSize") ?? "") ?? .medium
@@ -74,5 +80,6 @@ final class AppSettings: ObservableObject {
         self.notionDatabaseId = defaults.string(forKey: "notionDatabaseId")
         self.aiPostProcessingEnabled = defaults.object(forKey: "aiPostProcessingEnabled") as? Bool ?? true
         self.whisperLanguage = defaults.string(forKey: "whisperLanguage")
+        self.captureSystemAudio = defaults.object(forKey: "captureSystemAudio") as? Bool ?? true
     }
 }
